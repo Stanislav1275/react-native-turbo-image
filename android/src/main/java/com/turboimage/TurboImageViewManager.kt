@@ -32,7 +32,6 @@ import java.util.WeakHashMap
 class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEventListener {
   override fun getName() = REACT_CLASS
 
-  private lateinit var imageView: TurboImageView
   private var isInBackground = false
   override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any>? {
     return MapBuilder.of(
@@ -46,9 +45,9 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
 
   override fun createViewInstance(reactContext: ThemedReactContext): TurboImageView {
     reactContext.addLifecycleEventListener(this)
-    imageView = TurboImageView(reactContext)
-    TurboImageProgressRegistry.register(imageView)
-    return imageView
+    val view = TurboImageView(reactContext)
+    TurboImageProgressRegistry.register(view)
+    return view
   }
 
   override fun onAfterUpdateTransaction(view: TurboImageView) {
@@ -279,19 +278,44 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
     )
   }
 
+  /**
+   * Lifecycle applies to every live view, not to whichever one happened to be created last.
+   *
+   * The field this used to hold was overwritten by `createViewInstance` on every mount, so a
+   * screen of N images left N-1 views that were never paused and never reloaded: their bitmaps
+   * stayed referenced while the app sat in the background — the state Play measures — and the
+   * single view that did get disposed was usually one already unmounted. It was also `lateinit`,
+   * so a pause before the first image mounted threw UninitializedPropertyAccessException from a
+   * lifecycle callback.
+   *
+   * [TurboImageProgressRegistry] already holds every live view weakly, so it is the list to walk.
+   */
   override fun onHostResume() {
-    if (isInBackground) {
-      reloadImage(imageView)
-    }
+    if (!isInBackground) return
+    isInBackground = false
+    TurboImageProgressRegistry.forEachView { reloadImage(it) }
   }
 
   override fun onHostPause() {
-    imageView.dispose()
     isInBackground = true
+    TurboImageProgressRegistry.forEachView { view ->
+      // `dispose()` cancels the request; the decoded frame stays attached to the view as its
+      // drawable, so a screen of reader pages keeps every page it showed. Measured in the
+      // background, 60s after HOME: Graphics 214.6 MB — the quantity Play flags at 200 MB.
+      // Dropping the drawable is safe because `onHostResume` reloads every registered view.
+      view.dispose()
+      view.setImageDrawable(null)
+    }
+    // Disposing the views drops the requests, not the pixels: Coil keeps decoded bitmaps in its
+    // MemoryCache, which is shared with the app-wide loader and sized at ~25% of the available
+    // heap — hundreds of MB of reader pages on a large device, held for as long as the process
+    // lives. Nothing in the background can use them, and the disk cache still has the encoded
+    // bytes, so the cost of dropping them is a re-decode on return.
+    imageLoaders.values.flatMap { it.values }.forEach { it.memoryCache?.clear() }
   }
 
   override fun onHostDestroy() {
-    imageView.dispose()
+    TurboImageProgressRegistry.forEachView { it.dispose() }
     // Shutting a loader down is what releases its NetworkCallback and its pools. Without this the
     // registrations survive the activity that caused them, and `dumpsys connectivity` keeps
     // listing them for the process.
