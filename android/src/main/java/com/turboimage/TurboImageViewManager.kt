@@ -312,6 +312,24 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
     // lives. Nothing in the background can use them, and the disk cache still has the encoded
     // bytes, so the cost of dropping them is a re-decode on return.
     imageLoaders.values.flatMap { it.values }.forEach { it.memoryCache?.clear() }
+
+    // Dropping the references is not enough to give the memory back.
+    //
+    // These are hardware bitmaps (allowHardware): their pixels live in graphics memory behind an
+    // AHardwareBuffer that is released when the Bitmap object is collected, through
+    // NativeAllocationRegistry. Nothing allocates while the app sits in the background, so no GC
+    // runs, so nothing is collected: measured on the reader screen, Graphics stayed at 130-214 MB
+    // for a minute after HOME with every reference already cleared, and fell to 3 MB only when a
+    // trim was delivered by hand — and the platform delivers one only under memory pressure.
+    //
+    // One GC on a background thread when the app leaves the foreground is a cheap way to close
+    // that gap: it costs nothing the user can see (the UI is gone) and it is what the platform's
+    // own trim path does.
+    Thread({
+      System.gc()
+      System.runFinalization()
+      System.gc()
+    }, "turbo-image-background-release").apply { priority = Thread.MIN_PRIORITY }.start()
   }
 
   override fun onHostDestroy() {
