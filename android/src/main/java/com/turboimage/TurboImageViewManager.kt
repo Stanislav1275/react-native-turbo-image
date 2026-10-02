@@ -46,12 +46,14 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
   override fun createViewInstance(reactContext: ThemedReactContext): TurboImageView {
     reactContext.addLifecycleEventListener(this)
     val view = TurboImageView(reactContext)
+    view.reload = { if (!isInBackground) reloadImage(it) else it.needsReloadOnAttach = true }
     TurboImageProgressRegistry.register(view)
     return view
   }
 
   override fun onAfterUpdateTransaction(view: TurboImageView) {
     super.onAfterUpdateTransaction(view)
+    view.needsReloadOnAttach = false
     reloadImage(view)
   }
 
@@ -59,6 +61,11 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
     super.onDropViewInstance(view)
     TurboImageProgressRegistry.unregister(view)
     view.dispose()
+    // A dropped view can outlive its unmount (anything still referencing it keeps the View object
+    // alive), and its drawable would keep the decoded frame pinned along with it.
+    view.setImageDrawable(null)
+    view.needsReloadOnAttach = false
+    view.reload = null
   }
 
   /**
@@ -293,7 +300,11 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
   override fun onHostResume() {
     if (!isInBackground) return
     isInBackground = false
-    TurboImageProgressRegistry.forEachView { reloadImage(it) }
+    // Off-window views (clipped list cells, screens further down the stack) reload when they are
+    // attached again — decoding them now would re-pin exactly the frames onHostPause released.
+    TurboImageProgressRegistry.forEachView {
+      if (it.isAttachedToWindow) reloadImage(it) else it.needsReloadOnAttach = true
+    }
   }
 
   override fun onHostPause() {

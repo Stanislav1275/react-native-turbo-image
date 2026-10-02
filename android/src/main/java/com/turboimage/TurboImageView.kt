@@ -7,6 +7,7 @@ import android.graphics.drawable.Drawable
 import android.util.Base64
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.swiperefreshlayout.widget.CircularProgressDrawable
+import coil.dispose
 import coil.size.Size
 import coil.transform.CircleCropTransformation
 import coil.transform.Transformation
@@ -19,6 +20,43 @@ import okhttp3.Headers
 @SuppressLint("ViewConstructor")
 class TurboImageView(private val reactContext: ThemedReactContext) :
   AppCompatImageView(reactContext) {
+  /** Set by the view manager: re-issues the load for this view's current props. */
+  internal var reload: ((TurboImageView) -> Unit)? = null
+
+  /** The decoded frame was dropped while off-window; the next attach must load it again. */
+  internal var needsReloadOnAttach = false
+
+  /**
+   * Off-window views give their bitmap back.
+   *
+   * `dispose()` only cancels the request — the decoded frame stays attached as the view's
+   * drawable. A detached view is not drawn, yet its frame still pins a hardware buffer (a webtoon
+   * strip page is ~8MB) for as long as the View object lives. Measured on a Redmi 10 reading a
+   * webtoon: Graphics grew ~3.8MB/s of scrolling, 67 -> 876MB in four minutes, unaffected by GC,
+   * chapter transitions or leaving the reader, and fell to 103MB only when the activity paused and
+   * every registered view dropped its drawable — i.e. pages were pinned by detached views
+   * (clipped subviews, dropped-but-still-referenced cells), not by Coil's bounded memory cache.
+   *
+   * The frame usually goes back into Coil's memory cache, so re-attaching (scrolling back a few
+   * pages) is a cache hit with no visible reload.
+   */
+  override fun onDetachedFromWindow() {
+    super.onDetachedFromWindow()
+    if (drawable != null) {
+      dispose()
+      setImageDrawable(null)
+      needsReloadOnAttach = true
+    }
+  }
+
+  override fun onAttachedToWindow() {
+    super.onAttachedToWindow()
+    if (needsReloadOnAttach) {
+      needsReloadOnAttach = false
+      reload?.invoke(this)
+    }
+  }
+
   var uri: String? = null
   var headers: Headers? = null
   var cacheKey: String? = null
