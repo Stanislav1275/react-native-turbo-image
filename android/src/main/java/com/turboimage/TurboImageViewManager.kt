@@ -14,6 +14,7 @@ import coil.drawable.CrossfadeDrawable
 import coil.load
 import coil.memory.MemoryCache
 import coil.size.Dimension
+import coil.size.Scale
 import coil.size.Size
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.ReadableMap
@@ -158,7 +159,15 @@ class TurboImageViewManager : SimpleViewManager<TurboImageView>(), LifecycleEven
           error(view.thumbhashDrawable ?: view.blurhashDrawable)
         }
       }
-      view.resize?.let { size(it) }
+      view.resize?.let {
+        size(it)
+        // `resize` fixes the decode WIDTH only (height Undefined). Left implicit, Coil derives the
+        // decode scale from the view's ScaleType: FIT for contain, FILL for cover/stretch — and
+        // FILL with an Undefined height computes inSampleSize = 1, i.e. the source is decoded at
+        // full resolution and only then scaled down to the same final bitmap. Pinning FIT keeps
+        // the decode identical across resizeModes (prefetch, with no view, is FIT already).
+        scale(Scale.FIT)
+      }
     }
   }
 
